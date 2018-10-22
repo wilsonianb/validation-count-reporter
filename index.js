@@ -239,13 +239,13 @@ function purge() {
 }
 
 function parseManifest (data) {
-  let buff = new Buffer(data, 'base64');
+  let buff = Buffer.from(data, 'base64');
   let manhex = buff.toString('hex').toUpperCase();
   return codec.decode(manhex)
 }
 
 function toBytes(hex) {
-  return new Buffer(hex, 'hex').toJSON().data;
+  return Buffer.from(hex, 'hex').toJSON().data;
 }
 
 function hextoBase58 (hex) {
@@ -275,7 +275,7 @@ function getUNL () {
     url: valListUrl,
     json: true
   }).then(data => {
-    let buff = new Buffer(data.blob, 'base64');
+    let buff = Buffer.from(data.blob, 'base64');
     const valList = JSON.parse(buff.toString('ascii'))
 
     if (valList.sequence <= valListSeq) {
