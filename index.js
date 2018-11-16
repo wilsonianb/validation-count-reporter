@@ -19,8 +19,6 @@ const connections = {};
 const validations = {};
 const ledgers = {};
 
-let ledgerCutoff = 0
-
 let validators = {}
 let manifestKeys = {}
 
@@ -60,17 +58,15 @@ function saveManifest(manifest) {
 }
 
 function saveValidation(validation) {
-  validation.validation_public_key = manifestKeys[validation.validation_public_key]
+  validation.public_key = manifestKeys[validation.validation_public_key]
 
-  if (!validation.validation_public_key ||
-      !validators[validation.validation_public_key] ||
-      parseInt(validation.ledger_index) <= ledgerCutoff)
+  if (!validation.public_key ||
+      !validators[validation.public_key])
     return
 
-  const rows = [];
   const key = [
     validation.ledger_hash,
-    validation.validation_public_key
+    validation.public_key
   ].join('|');
 
   // already encountered
@@ -81,35 +77,78 @@ function saveValidation(validation) {
 
   validations[key] = validation; // cache
 
-  if (!validation.full) {
-    console.log('partial validation from', getName(validation.validation_public_key), validation.ledger_hash)
-    if (!trouble) {
-      console.log('@channel')
-      messageSlack('<!channel> :fire: :rippleguy:')
-      trouble = true
-    }
-    messageSlack(':x: `' + validation.ledger_index + '` *partial validation* from `' + getName(validation.validation_public_key) + '` for `' + validation.ledger_hash + '`')
-  }
-
-  if (!ledgers[validation.ledger_index]) {
-    ledgers[validation.ledger_index] = {
+  if (!ledgers[validation.ledger_hash]) {
+    ledgers[validation.ledger_hash] = {
       timestamp: validation.timestamp,
-      hashes: {}
+      index: validation.ledger_index,
+      full: [],
+      partial: []
     }
   }
 
-  if (!ledgers[validation.ledger_index].hashes[validation.ledger_hash]) {
-    ledgers[validation.ledger_index].hashes[validation.ledger_hash] = []
+  if (validation.full) {
+    ledgers[validation.ledger_hash].full.push(validation.public_key)
+    if (ledgers[validation.ledger_hash].full.length == Object.keys(validators).length &&
+        !trouble) {
+      reportLedger(validation.ledger_hash)
+    }
+  } else {
+    ledgers[validation.ledger_hash].partial.push(validation.public_key)
   }
+}
 
-  ledgers[validation.ledger_index].hashes[validation.ledger_hash].push(validation.validation_public_key);
-  if (ledgers[validation.ledger_index].hashes[validation.ledger_hash].length == Object.keys(validators).length) {
+function reportLedger(hash) {
+  let message = '`' + ledgers[hash].index + '` `' + hash + '` received ' + ledgers[hash].full.length +
+    '/' + Object.keys(validators).length + ' full validations'
+
+  if (ledgers[hash].full.length === Object.keys(validators).length &&
+      !ledgers[hash].partial.length) {
+    message = ':heavy_check_mark: ' + message
     trouble = false
     goodLedgerTime = smoment()
-    console.log(validation.ledger_index, validation.ledger_hash, 'received', Object.keys(validators).length, 'validations')
-    messageSlack(':heavy_check_mark: `' + validation.ledger_index + '` `' + validation.ledger_hash + '` received ' + Object.keys(validators).length +  ' validations')
-    delete ledgers[validation.ledger_index]
+  } else {
+    console.log(ledgers[hash])
+    message = ':x: ' + message
+
+    if (!trouble &&
+      (goodLedgerTime < ledgers[hash].timestamp ||
+        ledgers[hash].index-badLedger > Object.keys(ledgers).length)) {
+      messageSlack('<!channel> :fire:')
+      console.log('@channel')
+      trouble = true
+    }
+
+    if (badLedger < ledgers[hash].index)
+      badLedger = ledgers[hash].index
+
+    const details = {}
+
+    if (ledgers[hash].partial.length) {
+      details.partial = ledgers[hash].partial.map(pubkey => getName(pubkey))
+    }
+
+    if ((ledgers[hash].full.length + ledgers[hash].partial.length) > Object.keys(validators).length/2) {
+      details.missing = []
+
+      for (const pubkey of Object.keys(validators)) {
+        if (ledgers[hash].full.indexOf(pubkey) === -1 &&
+            ledgers[hash].partial.indexOf(pubkey) === -1)
+          details.missing.push(getName(pubkey))
+      }
+
+      if (!details.missing.length) {
+        delete details.missing
+      }
+    } else {
+      if (ledgers[hash].full.length) {
+        details.full = ledgers[hash].full.map(pubkey => getName(pubkey))
+      }
+    }
+    message += '\n```' + JSON.stringify(details, null, 2) + '```'
   }
+
+  messageSlack(message)
+  delete ledgers[hash]
 }
 
 function subscribe(ip) {
@@ -182,57 +221,23 @@ function subscribeToRippleds() {
 
   // Subscribe to validation websocket subscriptions from rippleds
   resolve(process.env['ALTNET'] ? 'r.altnet.rippletest.net' : 'r.ripple.com').then(ips => {
-    console.log(ips)
     for (const ip of ips) {
       subscribe('ws://' + ip + ':' + WS_PORT);
     }
   })
 }
 
-setInterval(purge, 5000);
-
 function purge() {
   const now = smoment();
 
-  for (let index in ledgers) {
-    if (smoment().diff(ledgers[index].timestamp) > 10000) {
-      console.log(ledgers[index].hashes)
-      if (!trouble &&
-          (goodLedgerTime < ledgers[index].timestamp ||
-            index-badLedger > Object.keys(ledgers).length)) {
-        messageSlack('<!channel> :fire: :rippleguy:')
-        console.log('@channel')
-        trouble = true
-      }
-      badLedger = index
-      let message = ''
-      for (let hash in ledgers[index].hashes) {
-        message += '\n:x: `' + index + '` `' + hash + '` received ' + ledgers[index].hashes[hash].length + ' validations'
-        if (ledgers[index].hashes[hash].length < Object.keys(validators).length/2) {
-          message += ' from'
-          for (var i = 0; i < ledgers[index].hashes[hash].length; i++) {
-            message += ' `' + getName(ledgers[index].hashes[hash][i]) + '`,'
-          }
-          message = message.slice(0, -1)
-        } else {
-          message += ' (missing:'
-          for (const pubkey of Object.keys(validators)) {
-            if (ledgers[index].hashes[hash].indexOf(pubkey) === -1)
-              message += ' `' + getName(pubkey) + '`,'
-          }
-          message = message.slice(0, -1)
-          message += ')'
-        }
-      }
-      messageSlack(message)
-      delete ledgers[index];
+  for (let hash in ledgers) {
+    if (smoment().diff(ledgers[hash].timestamp) > 10000) {
+      reportLedger(hash)
     }
   }
 
   for (let key in validations) {
     if (smoment().diff(validations[key].timestamp) > 300000) {
-      if (ledgerCutoff < parseInt(validations[key].ledger_index))
-        ledgerCutoff = parseInt(validations[key].ledger_index)
       delete validations[key];
     }
   }
@@ -265,8 +270,12 @@ function setName (pubkey) {
     url: 'https://data.ripple.com/v2/network/validators/' + pubkey,
     json: true
   }).then(data => {
-    if (data.domain)
-      names[pubkey] = data.domain
+    if (data.domain) {
+      if (data.domain === 'ripple.com')
+        names[pubkey] = 'RIPPLE' + pubkey
+      else
+        names[pubkey] = data.domain
+    }
   })
 }
 
@@ -301,7 +310,7 @@ function getUNL () {
           if (getName(pubkey)===pubkey)
             setName(pubkey)
           if (!startup)
-            messageSlack('<!channel> :tada: new trusted validator: `' + getName(pubkey) +'`')
+            messageSlack('<!channel> :tada: new validator added to published list: `' + getName(pubkey) + '` (`' + pubkey + '`)')
         }
         validators[pubkey].signing_key = hextoBase58(manifest.SigningPubKey)
         validators[pubkey].seq = manifest.Sequence
@@ -311,6 +320,7 @@ function getUNL () {
       }
     }
     for (const validator of oldValidators) {
+      messageSlack('<!channel> validator removed from published list: `' + getName(validator) + '` (`' + validator + '`)')
       delete validators[validator]
     }
     console.log(validators)
@@ -324,7 +334,10 @@ function refreshSubscriptions() {
   subscribeToRippleds()
 }
 
-// refresh connections
-// every minute
-setInterval(refreshSubscriptions, 60 * 1000);
 refreshSubscriptions()
+
+// refresh connectionsevery minute
+setInterval(refreshSubscriptions, 60 * 1000);
+
+// flush stale validations from cache every 5 seconds
+setInterval(purge, 5000);
