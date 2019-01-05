@@ -1,0 +1,5 @@
+{
+  "summary": "XRP Ledger Validator is missing",
+  "source": "validator hostname/FQDN",
+  "severity": "critical"
+}

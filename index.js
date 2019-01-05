@@ -9,8 +9,11 @@ const Promise = require('bluebird');
 var resolve = Promise.promisify(require("dns").resolve4);
 var Slack = require('slack-node');
 const names = require('./validator-names.json');
+const payload = require('./pagerduty-payload.json');
 
 const webhookUri = process.env['WEBHOOK_URI']
+const routingKey = process.env['PAGERDUTY_KEY']
+const pagerDutyVal = process.env['PAGERDUTY_VALIDATOR']
 
 var slack = new Slack();
 slack.setWebhook(webhookUri);
@@ -31,6 +34,8 @@ var trouble = false
 var goodLedgerTime = smoment()
 var badLedger = 0
 
+var incidentID = null
+
 function messageSlack (message) {
   slack.webhook({
     text: message
@@ -38,6 +43,34 @@ function messageSlack (message) {
     if (err)
       console.log(err)
   });
+}
+
+function sendPagerDutyEvent (action) {
+  return request({
+    method: 'POST',
+    uri: 'https://events.pagerduty.com/v2/enqueue',
+    json: true,
+    body: {
+      routing_key: routingKey,
+      event_action: action,
+      dedup_key: incidentID,
+      payload: payload
+    },
+    resolveWithFullResponse: true
+  }).then(resp => {
+    console.log(resp.body)
+  })
+}
+
+function triggerPagerDuty () {
+  console.log('triggering pagerduty outage on ledger', incidentID)
+  sendPagerDutyEvent('trigger')
+}
+
+function resolvePagerDuty () {
+  console.log('resolving pagerduty outage from ledger', incidentID)
+  sendPagerDutyEvent('resolve')
+  incidentID = null
 }
 
 function getName (pubkey) {
@@ -106,6 +139,9 @@ function reportLedger(hash) {
     message = ':heavy_check_mark: ' + message
     trouble = false
     goodLedgerTime = smoment()
+    if (incidentID && Number.parseInt(incidentID) < Number.parseInt(ledgers[hash].index)) {
+      resolvePagerDuty()
+    }
   } else {
     console.log(ledgers[hash])
     message = ':x: ' + message
@@ -145,6 +181,11 @@ function reportLedger(hash) {
       }
     }
     message += '\n```' + JSON.stringify(details, null, 2) + '```'
+
+    if (!incidentID && message.indexOf(pagerDutyVal) !== -1) {
+      incidentID = ledgers[hash].index
+      triggerPagerDuty()
+    }
   }
 
   messageSlack(message)
@@ -336,7 +377,7 @@ function refreshSubscriptions() {
 
 refreshSubscriptions()
 
-// refresh connectionsevery minute
+// refresh connections every minute
 setInterval(refreshSubscriptions, 60 * 1000);
 
 // flush stale validations from cache every 5 seconds
