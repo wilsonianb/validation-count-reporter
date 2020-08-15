@@ -9,6 +9,7 @@ const Promise = require('bluebird');
 var resolve = Promise.promisify(require("dns").resolve4);
 var Slack = require('slack-node');
 const names = require('./validator-names.json');
+const manifests = require('./manifests.json');
 const payload = require('./pagerduty-payload.json');
 
 const webhookUri = process.env['WEBHOOK_URI']
@@ -342,6 +343,13 @@ function getUNL () {
       remove(oldValidators, pubkey)
 
       const manifest = parseManifest(validator.manifest)
+      if (startup && manifests[pubkey]) {
+        const manifest2 = parseManifest(manifests[pubkey])
+        if (manifest.Sequence < manifest2.Sequence) {
+          manifest.Sequence = manifest2.Sequence
+          manifest.SigningPubKey = manifest2.SigningPubKey
+        }
+      }
 
       if (!validators[pubkey] || validators[pubkey].seq < manifest.Sequence) {
         if (validators[pubkey]) {
